@@ -2,16 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Box, Paper, Typography, TextField, Button, Divider, IconButton, ToggleButton, ToggleButtonGroup, Chip, Alert } from '@mui/material';
 import { Save, Edit, Delete, ChevronLeft, ChevronRight, Add, FindReplace, ZoomIn, ZoomOut, Fullscreen, FullscreenExit } from '@mui/icons-material';
 import { PDFDocument, rgb } from 'pdf-lib';
-import * as pdfjsLib from 'pdfjs-dist';
+// Use pdfjs-dist with a bundled worker to avoid network issues
+import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.js';
 
-// PDF.js worker設定 - 複数の方法を試す
-try {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-  console.log('PDF.js worker URL set to:', pdfjsLib.GlobalWorkerOptions.workerSrc);
-} catch (error) {
-  console.warn('Failed to set PDF.js worker, trying alternative:', error);
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-}
+// Configure PDF.js to use the bundled worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface PDFEditorProps {
   file: File;
@@ -137,70 +133,77 @@ const PDFEditor: React.FC<PDFEditorProps> = ({ file, zoom }) => {
       
       const allTexts: ExtractedText[] = [];
       
-      // 最初のページのみ処理
-      const page = await pdf.getPage(1);
-      console.log('✅ Page 1 loaded');
-      
-      const textContent = await page.getTextContent();
-      console.log('✅ Text content extracted, items:', textContent.items.length);
-      
-      if (textContent.items.length === 0) {
-        console.warn('⚠️ No text items found in PDF');
-      }
-      
-      const viewport = page.getViewport({ scale: 1.0 });
-      console.log('✅ Viewport:', viewport.width, 'x', viewport.height);
-      
-      // 全てのテキストアイテムを詳細にログ出力
-      textContent.items.forEach((item: any, index: number) => {
-        console.log(`📝 Text item ${index}:`, {
-          text: `"${item.str}"`,
-          length: item.str?.length,
-          transform: item.transform,
-          width: item.width,
-          height: item.height,
-          hasOwnText: item.hasOwnProperty('str')
-        });
-      });
-      
-      let validItemCount = 0;
-      textContent.items.forEach((item: any, index: number) => {
-        // より緩い条件でテキストを検出
-        if (item.str !== undefined && item.str !== null) {
-          const text = String(item.str).trim();
-          if (text.length > 0) {
-            validItemCount++;
-            const transform = item.transform || [12, 0, 0, 12, 0, 0];
-            const x = transform[4] || 0;
-            const y = transform[5] || 0;
-            const scaleX = Math.abs(transform[0]) || 12;
-            const scaleY = Math.abs(transform[3]) || 12;
-            
-            // より保守的な幅・高さ計算
-            const calculatedWidth = item.width || Math.max(text.length * scaleX * 0.7, 30);
-            const calculatedHeight = Math.max(scaleY, scaleX, 12);
-            
-            // Y座標の計算
-            const adjustedY = Math.max(0, viewport.height - y - calculatedHeight);
-            
-            const textItem = {
-              id: `extracted_1_${index}`,
-              text: text,
-              x: Math.max(0, x),
-              y: adjustedY,
-              width: calculatedWidth,
-              height: calculatedHeight,
-              fontSize: Math.max(scaleX, 10),
-              pageIndex: 0
-            };
-            
-            console.log(`✅ Added text item ${validItemCount}:`, textItem);
-            allTexts.push(textItem);
-          }
+      // Process all pages instead of just the first one
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        console.log(`✅ Page ${pageNum} loaded`);
+
+        const textContent = await page.getTextContent();
+        console.log(
+          `✅ Text content extracted from page ${pageNum}, items:`,
+          textContent.items.length
+        );
+
+        if (textContent.items.length === 0) {
+          console.warn(`⚠️ No text items found in page ${pageNum}`);
         }
-      });
-      
-      console.log(`✅ Successfully processed ${validItemCount} text items`);
+
+        const viewport = page.getViewport({ scale: 1.0 });
+        console.log('✅ Viewport:', viewport.width, 'x', viewport.height);
+
+        // Log all text items for debugging
+        textContent.items.forEach((item: any, index: number) => {
+          console.log(`📝 Text item ${index} on page ${pageNum}:`, {
+            text: `"${item.str}"`,
+            length: item.str?.length,
+            transform: item.transform,
+            width: item.width,
+            height: item.height,
+            hasOwnText: Object.prototype.hasOwnProperty.call(item, 'str')
+          });
+        });
+
+        let validItemCount = 0;
+        textContent.items.forEach((item: any, index: number) => {
+          // Detect text more loosely
+          if (item.str !== undefined && item.str !== null) {
+            const text = String(item.str).trim();
+            if (text.length > 0) {
+              validItemCount++;
+              const transform = item.transform || [12, 0, 0, 12, 0, 0];
+              const x = transform[4] || 0;
+              const y = transform[5] || 0;
+              const scaleX = Math.abs(transform[0]) || 12;
+              const scaleY = Math.abs(transform[3]) || 12;
+
+              // More conservative width/height calculation
+              const calculatedWidth =
+                item.width || Math.max(text.length * scaleX * 0.7, 30);
+              const calculatedHeight = Math.max(scaleY, scaleX, 12);
+
+              // Y coordinate calculation
+              const adjustedY = Math.max(0, viewport.height - y - calculatedHeight);
+
+              const textItem = {
+                id: `extracted_${pageNum}_${index}`,
+                text,
+                x: Math.max(0, x),
+                y: adjustedY,
+                width: calculatedWidth,
+                height: calculatedHeight,
+                fontSize: Math.max(scaleX, 10),
+                pageIndex: pageNum - 1
+              };
+
+              console.log(`✅ Added text item ${validItemCount}:`, textItem);
+              allTexts.push(textItem);
+            }
+          }
+        });
+
+        console.log(`✅ Successfully processed ${validItemCount} text items on page ${pageNum}`);
+      }
+
       console.log('Final extracted texts:', allTexts);
       
       if (allTexts.length > 0) {
